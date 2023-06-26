@@ -1,0 +1,369 @@
+---
+title: "New Chic Data Analysis"
+author: "Maruthi Sai Phani Teja Chadalapaka"
+date: "`r Sys.Date()`"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message= FALSE, warning= FALSE)
+```
+
+# **Problem Statement**
+
+The inference of this project is to check which factors are affecting the dependent variable **Likes_count**. As our dependent variable is count variable. We thought to prepare the **Poisson Regression Model**.
+
+
+# **Loading datasets and packages**
+
+### Loading required packages
+
+```{r}
+library(shiny)
+library(shinythemes)
+library(kernlab)
+library(AER)
+library(dplyr)
+library(broom)
+library(maxLik)
+library(tidyr)
+library(tidyverse)
+library(skimr)
+library(factoextra)
+library(ggpubr)
+library(plotly)
+library(cluster)
+library(DT)
+library(ggforce)
+library(gridExtra)
+library(corrplot)
+library(MASS)
+```
+
+### Loading the datasets
+
+```{r}
+accessories <- read_csv("~/Downloads/accessories.csv", na = c("", "NA"))
+
+```
+
+# **Transforming data**
+
+### Creating discount price variable
+
+By Understanding from the dataset I see that we have only *discount %* variable. However, we thought of creating a new variable called *discount_price* to get the exact value.
+
+```{r}
+accessory <- accessories %>%
+  mutate(discount_price= (raw_price*(100-discount))/100)
+```
+
+### Checking datatypes of the dataset and converting the datatypes of variables as needed
+
+```{r}
+# Check the data types of each variable
+str(accessory)
+
+# Convert the subcategory and currency variables to factors
+accessory$subcategory <- as.factor(accessory$subcategory)
+accessory$currency <- as.factor(accessory$currency)
+
+```
+
+```{r}
+skim(accessory)
+```
+
+### Remove any missing values or outliers from the dataset.
+
+```{r}
+
+# Remove any missing values or outliers from the dataset
+accessory <- accessory %>% 
+  drop_na() %>%  # Remove rows with missing values
+  filter(likes_count < quantile(likes_count, 0.99))  # Remove the top 1% of likes_count values
+
+```
+
+# **Explore the data**
+
+### Calculate the summary statistics and distribution of the 'likes_count' variable using the 'summary' and 'hist' functions.
+
+```{r}
+# Check the summary statistics and distribution of the 'likes_count' variable
+summary(accessory$likes_count)
+
+ggplot(accessory, aes(x = likes_count)) +
+  geom_histogram(bins = 20, fill = "lightblue", color = "black") +
+  xlab("Likes Count") +
+  ylab("Frequency") +
+  ggtitle("Distribution of Likes Count")
+
+```
+
+### Scatter plots for all variables vs. 'Likes_Count' Variable.
+
+```{r}
+# Create scatterplots for all variables vs. 'likes_count'
+
+p1 <- ggplot(accessory, aes(x = current_price, y = likes_count)) +
+  geom_point() +
+  ggtitle("Scatterplot of current_price vs. likes_count")
+
+p2 <- ggplot(accessory, aes(x = raw_price, y = likes_count)) +
+  geom_point() +
+  ggtitle("Scatterplot of raw_price vs. likes_count")
+
+p3 <- ggplot(accessory, aes(x = discount, y = likes_count)) +
+  geom_point() +
+  ggtitle("Scatterplot of discount vs. likes_count")
+
+p4 <- ggplot(accessory, aes(x = discount_price, y = likes_count)) +
+  geom_point() +
+  ggtitle("Scatterplot of discount_price vs. likes_count")
+
+# Arrange the scatterplots in a grid
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+### Compute the correlation coefficients between all variables and 'likes_count' using a loop
+
+```{r}
+# Compute the correlation matrix for all variables
+cor_matrix <- cor(accessory[, c("current_price", "raw_price", "discount", "likes_count", "discount_price")])
+
+# Create a correlation plot using the 'corrplot' package
+corrplot(cor_matrix, method= "number",type = "upper", order = "hclust",tl.col = "black", col= colorRampPalette(c("white", "deepskyblue", "blue4"))(100))
+```
+
+# **Maximum Likehood Estimations**
+
+```{r}
+fit <- fitdistr(accessory$likes_count, "normal")
+mean_est <- fit$estimate[1]
+sd_est <- fit$estimate[2]
+
+# print the estimated parameter values
+cat("Maximum likelihood estimates:\n")
+cat("Mean:", mean_est, "\n")
+cat("Standard deviation:", sd_est, "\n")
+```
+
+# **Poisson Model**
+
+### Mean-Variance Relationship
+
+```{r}
+
+# Calculate the mean and variance of likes_count for each value of the subcategory variable
+mean_var_df <- accessory %>% group_by(subcategory) %>% summarise(mean_likes = mean(likes_count), var_likes = var(likes_count))
+
+# Plot the mean-variance relationship
+ggplot(mean_var_df, aes(x = mean_likes, y = var_likes)) +
+  geom_point() +
+  scale_x_continuous(name = "Mean likes count") +
+  scale_y_continuous(name = "Variance of likes count") +
+  ggtitle("Mean-Variance Relationship for Likes Count")
+
+```
+
+## Model Preparation for poisson
+
+### Dividng the data into test and train
+
+```{r}
+# Split data into training and testing sets
+set.seed(123)
+train_indices <- sample(nrow(accessory), 0.7*nrow(accessory)) # 70% for training
+train_data <- accessory[train_indices, ]
+test_data <- accessory[-train_indices, ]
+```
+
+### Preparing the model and checking the assumptions
+
+```{r}
+# Create Poisson regression model using training data
+poisson_model <- glm(likes_count ~ current_price + raw_price + discount, data = train_data, family = "poisson")
+
+poisson_aug <- augment(poisson_model)
+
+# Linearity assumption: plot residuals vs. fitted values
+ggplot(data = poisson_aug, aes(x = .fitted, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  xlab("Fitted values") +
+  ylab("Residuals")
+
+# Independence assumption: plot residuals vs. order of observations
+ggplot(data = poisson_aug, aes(x = .resid)) +
+  geom_histogram(binwidth = 0.25) +
+  xlab("Residuals")
+
+# Overdispersion assumption: calculate dispersion parameter
+dispersiontest(poisson_model)
+```
+
+An overdispersion test is performed on the Poisson regression model **poisson_model**, and the output displays the test results. The score test statistic is used in this test, and it is expected to follow a chi-squared distribution when the null hypothesis is true, indicating that the dispersion parameter is equal to 1.
+
+The test statistic is z = 3.7344, which is very large and corresponds to a p-value is 9.408e-05, indicating strong evidence against the null hypothesis of no overdispersion. The alternative hypothesis is that the true dispersion parameter is greater than 1, indicating that the Poisson assumption of equal mean and variance may not hold and that there is more variation in the data than expected by the Poisson model.
+
+The estimated dispersion parameter is 42.64843, which is much larger than 1 and supports the conclusion that the model suffers from overdispersion. To address overdispersion, one possible approach is to fit a negative binomial regression model, which allows for greater variability than the Poisson model.
+
+# **Negative Binomial Regression Model**
+
+## **Model 1 :** 
+**Model Equation:** $likes_count ~ $current price + $raw price + $discount + $discount price
+
+```{r}
+negbin_model <- glm.nb(likes_count ~ current_price + raw_price + discount +discount_price, data = train_data)
+
+#Linearity Assumptions
+# Plot fitted values vs. residuals
+plot(fitted(negbin_model), residuals(negbin_model), xlab = "Fitted values", ylab = "Residuals", main = "Residuals vs. Fitted Values")
+# Add lowess smoother
+lines(lowess(fitted(negbin_model), residuals(negbin_model)), col = "red")
+# Check for any patterns or nonlinear relationships
+
+# Independence Assumptions
+# Plot residuals vs. order of observations
+plot(resid(negbin_model) ~ seq_along(resid(negbin_model)), xlab = "Observation order", ylab = "Residuals", main = "Residuals vs. Observation Order")
+
+# Overdispersion Assumptions
+
+# Calculate Pearson residuals
+pearson_resid <- residuals(negbin_model, type = "pearson")
+
+# Calculate deviance residuals
+deviance_resid <- residuals(negbin_model, type = "deviance")
+
+# Plot Pearson residuals vs. fitted values
+plot(fitted(negbin_model), sqrt(abs(pearson_resid)), xlab = "Fitted values", ylab = "sqrt(abs(Pearson residuals))", main = "Pearson Residuals vs. Fitted Values")
+
+# Add lowess smoother
+lines(lowess(fitted(negbin_model), sqrt(abs(pearson_resid))), col = "red")
+# Check for any patterns or trends
+
+# Plot deviance residuals vs. fitted values
+plot(fitted(negbin_model), sqrt(abs(deviance_resid)), xlab = "Fitted values", ylab = "sqrt(abs(Deviance residuals))", main = "Deviance Residuals vs. Fitted Values")
+
+# Add lowess smoother
+lines(lowess(fitted(negbin_model), sqrt(abs(deviance_resid))), col = "red")
+
+```
+
+## **Model 2 :**
+
+**Model Equation:** $likes_count ~ $raw price + $discount + $discount price
+
+```{r}
+negbin_model_2 <- glm.nb(likes_count ~ raw_price + discount +discount_price, data = train_data)
+
+#Linearity Assumptions
+# Plot fitted values vs. residuals
+plot(fitted(negbin_model_2), residuals(negbin_model_2), xlab = "Fitted values", ylab = "Residuals", main = "Residuals vs. Fitted Values")
+# Add lowess smoother
+lines(lowess(fitted(negbin_model_2), residuals(negbin_model_2)), col = "red")
+# Check for any patterns or nonlinear relationships
+
+# Independence Assumptions
+# Plot residuals vs. order of observations
+plot(resid(negbin_model_2) ~ seq_along(resid(negbin_model_2)), xlab = "Observation order", ylab = "Residuals", main = "Residuals vs. Observation Order")
+
+# Overdispersion Assumptions
+
+# Calculate Pearson residuals
+pearson_resid <- residuals(negbin_model_2, type = "pearson")
+
+# Calculate deviance residuals
+deviance_resid <- residuals(negbin_model_2, type = "deviance")
+
+# Plot Pearson residuals vs. fitted values
+plot(fitted(negbin_model_2), sqrt(abs(pearson_resid)), xlab = "Fitted values", ylab = "sqrt(abs(Pearson residuals))", main = "Pearson Residuals vs. Fitted Values")
+
+# Add lowess smoother
+lines(lowess(fitted(negbin_model_2), sqrt(abs(pearson_resid))), col = "red")
+# Check for any patterns or trends
+
+# Plot deviance residuals vs. fitted values
+plot(fitted(negbin_model_2), sqrt(abs(deviance_resid)), xlab = "Fitted values", ylab = "sqrt(abs(Deviance residuals))", main = "Deviance Residuals vs. Fitted Values")
+
+# Add lowess smoother
+lines(lowess(fitted(negbin_model_2), sqrt(abs(deviance_resid))), col = "red")
+
+```
+
+# **Comparing two models**
+
+### Comparing the two models using AIC and BIC
+
+**Below Comparison is for same models with different model equation**
+
+```{r}
+    # Calculate AIC and BIC for both models
+    aic_negbin <- AIC(negbin_model)
+    bic_negbin <- BIC(negbin_model)
+    aic_negbin_2 <- AIC(negbin_model_2)
+    bic_negbin_2 <- BIC(negbin_model_2)
+    
+    # Compare AIC and BIC values to determine which model has a better fit
+    if (aic_negbin < aic_negbin_2 & bic_negbin < bic_negbin_2) {
+      result <- "Negbin Binomial model 1 is the better fit."
+      eqn <- "likes_count ~ current_price + raw_price + discount +discount_price"
+    } else if (aic_negbin < aic_negbin_2 & bic_negbin < bic_negbin_2) {
+      result <- "Negative Binomial model 2 is the better fit."
+      eqn <- "likes_count ~ raw_price + discount +discount_price"
+    } else {
+      result <- "Neither model has a significantly better fit."
+      eqn <- " No Equation"
+    }
+    
+    # Output the results and model equation
+    cat("AIC comparison:\n")
+    print(cbind(negbin_model = aic_negbin, negbin_model_2 = aic_negbin_2))
+    cat("\nBIC comparison:\n")
+    print(cbind(negbin_model = bic_negbin, negbin_model_2 = bic_negbin_2))
+    cat("\n", result, "\n")
+    cat("Model equation:\n", eqn)
+```
+
+**Below Comparison is for different methods**
+**Learning Purpose**
+```{r}
+    # Calculate AIC and BIC for both models
+    aic_poisson <- AIC(poisson_model)
+    bic_poisson <- BIC(poisson_model)
+    aic_negbin <- AIC(negbin_model)
+    bic_negbin <- BIC(negbin_model)
+    
+    # Compare AIC and BIC values to determine which model has a better fit
+    if (aic_poisson < aic_negbin & bic_poisson < bic_negbin) {
+      result <- "Poisson model is the better fit."
+      eqn <- "likes_count ~ current_price + raw_price + discount"
+    } else if (aic_negbin < aic_poisson & bic_negbin < bic_poisson) {
+      result <- "Negative Binomial model is the better fit."
+      eqn <- "likes_count ~ current_price + raw_price + discount + discount_price"
+    } else {
+      result <- "Neither model has a significantly better fit."
+      eqn <- "likes_count ~ current_price + raw_price + discount,"
+    }
+    
+    # Output the results and model equation
+    cat("AIC comparison:\n")
+    print(cbind(poisson_model = aic_poisson, negbin_model = aic_negbin))
+    cat("\nBIC comparison:\n")
+    print(cbind(poisson_model = bic_poisson, negbin_model = bic_negbin))
+    cat("\n", result, "\n")
+    cat("Model equation:\n", eqn)
+```
+
+The table provided shows the Bayesian Information Criterion (BIC) and Akaike Information Criterion (AIC) for two different models, a Poisson regression model and a negative binomial regression model.
+
+The BIC and AIC are both measures of the goodness of fit of a statistical model. They take into account both the likelihood of the data given the model and the complexity of the model, which is typically measured by the number of parameters.
+
+In this case, the Poisson model has 4 degrees of freedom (df) and the negative binomial model has 10 df. The BIC for the Poisson model is 2933.0270 and for the negative binomial model is 707.0128. The lower the BIC value, the better the model fits the data. Therefore, in this case, the Poisson model has a worse fit than the negative binomial model.
+
+Similarly, the AIC for the Poisson model is 2924.3294 and for the negative binomial model is 693.9664. Again, the lower the AIC value, the better the model fits the data. Therefore, in this case, the negative binomial model has a better fit than the Poisson model.
+
+Overall, based on the BIC and AIC values, the negative binomial model seems to be a better fit for the data than the Poisson model.
